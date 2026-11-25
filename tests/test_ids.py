@@ -223,3 +223,211 @@ def test_run_writes_verified_bundle_and_rejects_tampering(cic, tmp_path):
             pipeline.load_bundle(tmp_path)
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+# ---------- live inbox ----------
+
+def test_live_inbox_scores_valid_events_and_never_normalizes_bad_ones(trained, tmp_path):
+    from ids import live
+    df, info, part, bundle = trained
+    inbox = tmp_path / "inbox.jsonl"
+    rows = df.loc[part == "test", info["features"]].head(5)
+    for _, r in rows.iterrows():
+        live.write_event(r.to_dict(), "cic_ids2017", "test", "sim-1", inbox)
+    bad = rows.iloc[0].to_dict()
+    bad.pop(info["features"][0])
+    live.write_event(bad, "cic_ids2017", "missing-feature", "sim-1", inbox)
+    wrong_type = dict(rows.iloc[0].to_dict(), **{info["numeric"][0]: "x"})
+    live.write_event(wrong_type, "cic_ids2017", "bad-type", "sim-1", inbox)
+    with open(inbox, "a") as f:
+        f.write("not json\n{\"partial")  # garbage line + an incomplete trailing line
+    events, offset = live.read_new(0, inbox)
+    assert len(events) == 8 and offset < inbox.stat().st_size  # incomplete line left for the next read
+    res, meta = live.score(bundle, events)
+    v = res["verdict"]
+    assert len(res) == 8 and (v[meta["scenario"] != "test"] == ERROR).all()
+    assert v[meta["scenario"] == "test"].ne(ERROR).all()
+    assert live.read_new(offset, inbox)[0] == []
+
+
+# ---------- console API ----------
+
+@pytest.mark.skipif(not list(pipeline.ARTIFACTS.glob("*/*/run_manifest.json")), reason="needs a trained bundle")
+def test_console_api_fails_safe_and_validates_input(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from ids import live
+    monkeypatch.setattr(live, "INBOX", tmp_path / "inbox.jsonl")
+    import server
+    monkeypatch.setattr(server, "FEEDBACK", tmp_path / "feedback.jsonl")
+    server.engine.load(server.engine.name)
+    c = TestClient(server.app)
+    rows, name, src = live.pick_rows(server.engine.schema, server.engine.records, "malformed", 1, np.random.default_rng(0))
+    live.stream(rows, server.engine.schema["dataset"], name, src, 0, path=live.INBOX)
+    zd, name, src = live.pick_rows(server.engine.schema, server.engine.records, "zero-day", 5, np.random.default_rng(0))
+    live.stream(zd, server.engine.schema["dataset"], name, src, 0, path=live.INBOX)
+    server.engine.tick(0.1)
+    ev = c.get("/api/events?source=live").json()
+    assert len(ev) == 6 and NORMAL not in {e["verdict"] for e in ev}
+    err = [e for e in ev if e["verdict"] == ERROR]
+    assert len(err) == 1 and c.get(f"/api/events/{err[0]['id']}/explain").json()["shap"]["method"] == "unavailable"
+    eid = ev[0]["id"]
+    assert c.post(f"/api/events/{eid}/triage", json={"status": "escalated"}).json()["status"] == "escalated"
+    assert (tmp_path / "feedback.jsonl").read_text().count("escalated") == 1
+    assert c.post(f"/api/events/{eid}/triage", json={"status": "delete"}).status_code == 422
+    assert c.post("/api/inject", json={"scenario": "../etc", "count": 1}).status_code == 422
+    assert c.post("/api/inject", json={"scenario": "zero-day", "count": 10_000}).status_code == 422
+    assert c.post("/api/bundle", json={"bundle": "../../secrets"}).status_code == 404
+    assert c.get("/api/events/999999").status_code == 404
+
+
+# ---------- explainable AI layer ----------
+
+def test_glossary_describes_known_and_unknown_features():
+    from ids import glossary
+    assert glossary.describe("srv_serror_rate") == glossary.NSL["srv_serror_rate"]
+    d = glossary.describe("fwd_iat_mean")
+    assert d and "_" not in d
+
+
+def _ev(verdict, novelty, cset, **kw):
+    return {"verdict": verdict, "novelty": novelty, "set": cset, "score": kw.get("score", 0.1), "candidate": kw.get("candidate"),
+            "conflict": kw.get("conflict", False), "error": kw.get("error")}
+
+
+_needs_bundle = pytest.mark.skipif(not list(pipeline.ARTIFACTS.glob("*/*/run_manifest.json")), reason="needs a trained bundle")
+
+
+@_needs_bundle
+@pytest.mark.parametrize("ev,row", [
+    (_ev(KNOWN, False, ["DoS"], candidate="DoS"), 1),
+    (_ev(KNOWN, True, ["DoS"], candidate="DoS", conflict=True), 2),
+    (_ev(NORMAL, False, ["BENIGN"]), 3),
+    (_ev(UNKNOWN, True, ["BENIGN"]), 4),
+    (_ev(UNKNOWN, True, []), 5),
+    (_ev(UNKNOWN, True, ["BENIGN", "DoS"]), 5),
+    (_ev(UNCERTAIN, False, []), 6),
+    (_ev(UNCERTAIN, False, ["BENIGN", "DoS"]), 6),
+    (_ev(ERROR, None, None, error="schema mismatch"), 7),
+    (_ev(DEGRADED, None, None), 7),
+])
+def test_rule_for_matches_decision_table(ev, row):
+    import server
+    assert server.rule_for(ev) == row
+
+
+@_needs_bundle
+def test_summary_is_a_plain_sentence_for_every_verdict():
+    import server
+    scores = {"BENIGN": 0.6, "DoS": 0.3, "R2L": 0.1}
+    cases = [_ev(UNKNOWN, True, []), _ev(KNOWN, False, ["DoS"], candidate="DoS"),
+             _ev(KNOWN, True, ["DoS"], candidate="DoS", conflict=True), _ev(NORMAL, False, ["BENIGN"], score=-0.1),
+             _ev(UNCERTAIN, False, ["BENIGN", "DoS"], score=-0.1), _ev(ERROR, None, None, error="schema mismatch"),
+             _ev(DEGRADED, None, None)]
+    for e in cases:
+        s = server.summary(e, scores, 0.075)
+        assert s.endswith(".") and "nan" not in s.lower() and "None" not in s
+        if e["verdict"] in (UNKNOWN, KNOWN, NORMAL, UNCERTAIN):
+            assert "alert line" in s
+        if e["verdict"] == ERROR:
+            assert "schema mismatch" in s
+
+
+@pytest.fixture
+def console(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from ids import live
+    monkeypatch.setattr(live, "INBOX", tmp_path / "inbox.jsonl")
+    import server
+    monkeypatch.setattr(server, "FEEDBACK", tmp_path / "feedback.jsonl")
+    server.engine.load(server.engine.name)
+    server.engine.running = True
+    server.engine.rate = 1000
+    server.engine.tick(1.0)
+    rows, name, src = live.pick_rows(server.engine.schema, server.engine.records, "malformed", 1, np.random.default_rng(0))
+    live.stream(rows, server.engine.schema["dataset"], name, src, 0)
+    server.engine.running = False
+    server.engine.tick(0.1)
+    return server, TestClient(server.app)
+
+
+@_needs_bundle
+def test_event_detail_pass_marks_match_conformal_sets(console):
+    server, c = console
+    ev = [e for e in c.get("/api/events?limit=2000").json() if e["verdict"] != ERROR]
+    assert len(ev) > 100
+    for e in ev[:300]:
+        d = c.get(f"/api/events/{e['id']}").json()
+        assert d["summary"] and 1 <= d["rule"] <= 7
+        assert set(d["pass_marks"]) == set(server.engine.schema["classes"])
+        assert all(0 <= v <= 1 for v in d["pass_marks"].values())
+        fits = {k for k, p in d["scores"].items() if p is not None and p >= d["pass_marks"][k] - 1e-9}
+        assert fits == set(d["event"]["set"] or []), (e["id"], d["scores"], d["pass_marks"], d["event"]["set"])
+
+
+@_needs_bundle
+def test_explain_describes_features_and_refuses_bad_records(console):
+    server, c = console
+    ev = c.get("/api/events?limit=2000").json()
+    ok = next(e for e in ev if e["verdict"] == UNKNOWN)
+    x = c.get(f"/api/events/{ok['id']}/explain").json()
+    assert x["shap"]["top_features"] and all(t["description"] for t in x["shap"]["top_features"])
+    assert x["baseline_deviation"] and all(d["description"] for d in x["baseline_deviation"])
+    bad = next(e for e in ev if e["verdict"] == ERROR)
+    assert c.get(f"/api/events/{bad['id']}/explain").json()["shap"]["method"] == "unavailable"
+
+
+@_needs_bundle
+def test_model_endpoint_explains_the_model(console):
+    server, c = console
+    m = c.get("/api/model").json()
+    imp = [t["importance"] for t in m["importance"]]
+    assert 0 < len(imp) <= 15 and imp == sorted(imp, reverse=True)
+    assert all(t["description"] for t in m["importance"])
+    assert all(0 <= v["pass_mark"] <= 1 for v in m["classes_cal"].values())
+    assert "threshold" in m and m["target_fpr"] > 0
+    assert m["holdout"] == server.engine.schema["holdout_family"]
+
+
+# ---------- injection modes ----------
+
+def test_injection_modes_pick_what_was_asked(trained):
+    from ids import live
+    df, info, part, bundle = trained
+    test = df[part == "test"]
+    records = {"X": test[info["features"]], "truth": test[["label", "label_raw"]]}
+    schema = bundle["feature_schema"]
+    rng = np.random.default_rng(0)
+    truth = lambda items: records["truth"].loc[[r.name for r, _, _ in items]]  # noqa: E731
+    assert set(truth(live.plan_items(schema, records, "normal", 20, rng))["label"]) == {"BENIGN"}
+    assert set(truth(live.plan_items(schema, records, "zero-day", 20, rng))["label"]) == {schema["holdout_family"]}
+    one = live.plan_items(schema, records, "attack", 10, rng, "DoS Hulk")
+    assert set(truth(one)["label_raw"]) == {"DoS Hulk"} and one[0][1].startswith("attack: DoS Hulk (DoS, known")
+    assert set(truth(live.plan_items(schema, records, "attack", 10, rng, "dos"))["label"]) == {"DoS"}  # family, any case
+    mix = live.plan_items(schema, records, "mix", 40, rng, "Bot", mix=(0.5, 0.25, 0.25))
+    t = truth(mix)
+    assert len(mix) == 40 and (t["label"] == "BENIGN").sum() == 20 and (t["label"] == "PortScan").sum() == 10 and (t["label"] == "Bot").sum() == 10
+    with pytest.raises(ValueError, match="unknown attack"):
+        live.plan_items(schema, records, "attack", 5, rng, "nosuch")
+    with pytest.raises(ValueError, match="choose an attack"):
+        live.plan_items(schema, records, "attack", 5, rng)
+    cat = {r["type"]: r["status"] for r in live.attack_catalog(schema, records)}
+    assert cat["PortScan"] == "hidden" and cat["DoS Hulk"] == "known"
+
+
+@pytest.mark.skipif(not list(pipeline.ARTIFACTS.glob("*/*/run_manifest.json")), reason="needs a trained bundle")
+def test_inject_api_specific_attack_and_mix(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from ids import live
+    monkeypatch.setattr(live, "INBOX", tmp_path / "inbox.jsonl")
+    import server
+    c = TestClient(server.app)
+    types = c.get("/api/attack-types").json()["types"]
+    assert types and {"type", "family", "count", "status"} <= set(types[0])
+    known = next(t["type"] for t in types if t["status"] == "known")
+    r = c.post("/api/inject", json={"scenario": "attack", "attack": known, "count": 5, "rate": 0}).json()
+    assert r["queued"] == 5
+    r = c.post("/api/inject", json={"scenario": "mix", "attack": known, "count": 20, "rate": 0}).json()
+    assert r["queued"] == 20 and r["breakdown"].get("normal traffic") == 14
+    assert c.post("/api/inject", json={"scenario": "attack", "attack": "nosuch", "count": 5}).status_code == 400
+    assert c.post("/api/inject", json={"scenario": "attack", "attack": "../x", "count": 5}).status_code == 422
+    assert c.post("/api/inject", json={"scenario": "mix", "count": 5, "zero_day_share": 0.8, "attack_share": 0.5}).status_code == 422

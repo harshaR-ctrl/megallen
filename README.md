@@ -1,9 +1,9 @@
-# Leakage-Audited Open-World Hybrid IDS
+# Megallen: leakage-audited open-world intrusion detection
 
 Offline defensive research demonstrator: a class-weighted Random Forest (known attacks), a benign-only
 Isolation Forest (novelty gate), class-conditional split conformal sets (uncertainty), and a deterministic
 decision table, with temporal grouping, a heuristic triage priority, TreeSHAP/baseline explanations, PSI drift
-and a Streamlit dashboard. Design specs: `architecture (1).md`, `pipeline (1).md`, `techstack (1).md`, `workflow (1).md`.
+and a real-time analyst console (FastAPI + plain JS + Plotly). Design specs: `architecture (1).md`, `pipeline (1).md`, `techstack (1).md`, `workflow (1).md`.
 
 **Scope:** replays labelled public-dataset records offline. It is not a live sensor and does not establish
 real-world zero-day detection.
@@ -16,8 +16,11 @@ real-world zero-day detection.
 | `ids/core.py` | Finite-sample threshold, conformal sets, decision table, priority, correlation, PSI |
 | `ids/pipeline.py` | Training, schema-validated inference, output contract, explanations, evaluation, bundles |
 | `run.py` | One experiment end to end -> `artifacts/<dataset>/<experiment_id>/` |
-| `app.py` | Dashboard: Operations Monitor, Alert Triage, Research Proof |
-| `tests/test_ids.py` | Checklist tests (decision table, fail-safes, calibration, splits, leakage, bundle integrity) |
+| `server.py` | Console backend: detection engine (replay + live inbox), REST API, server-sent event stream |
+| `web/` | Console frontend: Live monitor, Alerts, How it decides, Model results. Plain JS + Plotly, no build step |
+| `ids/glossary.py` | Plain-English description of every feature, used to write explanations as sentences |
+| `inject.py`, `ids/live.py` | Injection into the live inbox: normal, zero-day, a specific attack type or family, a shuffled mix, plus stress tests |
+| `tests/test_ids.py` | Checklist tests (decision table, fail-safes, calibration, splits, leakage, bundle integrity, console API, explanations) |
 | `data/raw/<dataset>/` | Raw files, kept read-only and unmodified (git-ignored) |
 | `feedback/feedback_log.jsonl` | Append-only analyst feedback; never used for training |
 
@@ -48,11 +51,82 @@ python run.py nsl_kdd --holdout R2L
 python run.py nsl_kdd --holdout Probe --split random                      # split-optimism audit
 python run.py cic_ids2017 --holdout PortScan --max-rows-per-class 50000   # start with a sample
 python run.py cic_ids2017 --holdout PortScan --max-rows-per-class 50000 --no-port
-streamlit run app.py
+python server.py                 # console at http://127.0.0.1:8000
 ```
 
 Defaults: seed 42, conformal alpha 0.05, target benign FPR 0.01, 200 trees. All arguments, file hashes,
 versions and the git commit go into `run_manifest.json`.
+
+## Console: detect a simulated zero-day live
+
+```bash
+# terminal 1
+python server.py                  # open http://127.0.0.1:8000
+
+# terminal 2 (or use the Simulate panel in the console)
+python inject.py list             # every attack type you can send and what it is to this model
+python inject.py normal           # normal traffic
+python inject.py zero-day         # the attack family this model never saw (Probe for lofo-probe-grouped)
+python inject.py attack neptune   # one specific attack type (or a family: attack DoS)
+python inject.py mix --attack smurf   # 70% normal + 15% zero-day + 15% smurf, shuffled
+python inject.py synthetic        # normal flows with 12 features pushed far out of range
+python inject.py malformed        # broken record: must show "Bad record", never Normal
+python inject.py zero-day --count 100 --rate 20 --experiment nsl_kdd/lofo-dos-grouped
+python inject.py clear            # empty the inbox
+```
+
+The console has four views:
+
+- **Live monitor:** a getting-started strip (start the replay, send a zero-day, open the newest alert), counters
+  for flows checked and each verdict, a chart of how unusual each flow is against the red alert line, verdicts over
+  time, a list of possible zero-days (only the ones you sent, or all), the Simulate panel, traffic shift (drift)
+  and your review queue. Every number has a "?" tooltip. Space starts or pauses the replay.
+- **Alerts:** filter by verdict, source (sent by you or test replay), review status and text. Selecting an alert
+  opens **"Why it decided this"** straight away (see Explainable AI below), then the suggested next step and your
+  review: Not reviewed, Investigating, Escalated, Resolved or False alarm, with a note (keys: `j`/`k` move,
+  `i` investigating, `e` escalate, `r` resolved, `f` false alarm). Every review is appended to
+  `feedback/feedback_log.jsonl` and never changes a model or threshold.
+- **How it decides:** the pipeline from input check to verdict, the decision rules in order, the confidence bar of
+  every attack class, the features the classifier relies on most, and a glossary of the words the console uses.
+- **Model results:** every trained model on its untouched test data side by side (click one to use it), plus which
+  class the classifier guessed, the final verdict by true traffic type, the leakage checks and the speed.
+
+The server binds to 127.0.0.1 only. Inject requests are validated (scenario enum, count 1-500), all event text
+is rendered with `textContent`, and bundles load only from `artifacts/` after checksum verification. Make sure the
+injector's `--experiment` matches the console's model so "zero-day" means a family that model never saw. This is a
+simulation: no packets are sent and nothing is scanned. A zero-day here is a held-out dataset family, not a
+real-world zero-day.
+
+## Explainable AI
+
+Every alert explains itself in three steps that mirror how the verdict was actually made, so the explanation is
+the decision, not a story told after it:
+
+1. **Is the traffic unusual?** The flow's unusualness score from the Isolation Forest (trained only on normal
+   traffic) is drawn against the alert line. The line is the finite-sample threshold set on held-back normal
+   traffic so about 1% of normal flows cross it.
+2. **Does it match a known attack?** Each class's classifier score is drawn against that class's confidence bar.
+   The bars come from class-conditional conformal calibration (bar = 1 - q_c). A class "fits" only if its score
+   reaches its bar, and the fitting classes are exactly the conformal set the decision used (a test checks this).
+3. **Which rule fired?** The decision table is shown with the matching row highlighted (`rule_for` in `server.py`).
+
+Above the steps, one plain-English sentence sums it up, for example: "Flagged as a possible zero-day: its
+unusualness score 0.180 is above the alert line 0.075, and no known class fit it with enough confidence. The
+classifier's best guess was DoS (68%), which is not enough to name a known attack."
+
+Below the steps:
+
+- **What made it unusual:** the features furthest from the benign training baseline (median and 95th percentile),
+  written as sentences. This is a diagnostic comparison, not SHAP and not proof of cause.
+- **What the classifier relied on:** TreeSHAP values of the Random Forest for its candidate or top class,
+  pushing towards or away from it. SHAP explains the classifier only; the Isolation Forest is explained by the
+  baseline deviation above.
+- **Global view:** the "How it decides" page shows the Random Forest's top 15 feature importances.
+
+`ids/glossary.py` gives every NSL-KDD feature (and common CIC-IDS2017 ones) a plain description; other names fall
+back to readable words. The API behind this: `/api/events/{id}` (summary, rule, scores, confidence bars),
+`/api/events/{id}/explain` (SHAP and baseline deviation with descriptions) and `/api/model` (importances, bars,
+alert line).
 
 ## Design decisions worth knowing
 

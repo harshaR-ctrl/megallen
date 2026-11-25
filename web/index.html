@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Megallen · Zero-day detection console</title>
+<meta name="description" content="Offline console that flags network flows unlike normal traffic and unlike any known attack, and explains every verdict.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23338ced' d='M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5z'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="/vendor/plotly.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5z"/></svg>
+    <div><b>Megallen</b><span>Zero-day detection console</span></div>
+  </div>
+  <label class="field">Model
+    <select id="bundle" aria-label="Model in use"></select>
+  </label>
+  <div class="replay" role="group" aria-label="Test traffic replay">
+    <button id="play" class="btn primary">Play test traffic</button>
+    <button id="reset" class="btn" title="Clear all events and start the replay from the beginning">Reset</button>
+    <label class="field">Speed
+      <select id="rate">
+        <option value="50">Slow</option><option value="200" selected>Normal</option>
+        <option value="1000">Fast</option><option value="5000">Very fast</option>
+      </select>
+    </label>
+    <div class="progress" aria-hidden="true"><i id="prog"></i></div>
+    <span id="progtxt" class="muted small">Not started</span>
+  </div>
+  <div class="spacer"></div>
+  <label class="toggle"><input type="checkbox" id="mask" checked> Hide IPs</label>
+  <span id="conn" class="conn" role="status">Connecting…</span>
+  <button id="help" class="btn" aria-haspopup="dialog">Help</button>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button role="tab" data-view="monitor" class="on">Live monitor</button>
+  <button role="tab" data-view="alerts">Alerts <span id="newcount" class="count zero" title="Alerts nobody has reviewed yet">0</span></button>
+  <button role="tab" data-view="how">How it decides</button>
+  <button role="tab" data-view="eval">Model results</button>
+  <span class="ctx" id="ctx"></span>
+</nav>
+<div class="datastrip" id="datastrip" role="note"></div>
+
+<main id="main">
+  <!-- ================= LIVE MONITOR ================= -->
+  <section id="view-monitor" class="view on" aria-label="Live monitor">
+    <div id="intro" class="intro card">
+      <div class="intro-text">
+        <h2>Catch traffic that matches no known attack</h2>
+        <p>Every flow is checked by two models. One asks <b>"is this unlike normal traffic?"</b>, the other asks <b>"is this an attack I was trained on?"</b>
+          Flows that are unusual <em>and</em> match nothing known become <b>possible zero-days</b>, and each one comes with an explanation.</p>
+      </div>
+      <ol class="steps">
+        <li><span>1</span><div><b>Start the test traffic</b><small>Replays real labelled flows the model never trained on.</small></div><button class="btn primary" data-act="start">Play test traffic</button></li>
+        <li><span>2</span><div><b>Send a zero-day</b><small>Injects an attack type that was hidden from training.</small></div><button class="btn danger" data-act="zeroday">Send zero-day attack</button></li>
+        <li><span>3</span><div><b>See why it was flagged</b><small>Open the newest alert and read the explanation.</small></div><button class="btn" data-act="open">Open newest zero-day</button></li>
+      </ol>
+      <button class="close" id="intro-close" aria-label="Hide getting started">×</button>
+    </div>
+
+    <div class="kpis four" id="kpis"></div>
+
+    <div class="grid">
+      <div class="card span2">
+        <div class="card-h"><h3>Alerts in the last 3 minutes <i class="info" tabindex="0" data-tip="How many flows were flagged in each 10-second window. Red = possible zero-days (unusual and unlike any known attack). Orange = known attacks.">?</i></h3>
+          <span class="muted small">Counted every 10 seconds</span></div>
+        <div id="chart-stream" class="chart" style="height:340px" role="img" aria-label="Line chart of alerts over the last 3 minutes"></div>
+      </div>
+      <div class="card feed-card">
+        <div class="card-h"><h3>Possible zero-days <i class="info" tabindex="0" data-tip="Flows that are unusual and match no attack the model knows. Click one to see why it was flagged.">?</i></h3>
+          <div class="seg" id="feedsrc" role="group" aria-label="Which flows to list"><button data-src="live" class="on" title="Only flows you sent with Simulate or inject.py">Sent by you</button><button data-src="all" title="Include the test traffic replay">All</button></div></div>
+        <ol id="feed" class="feed"></ol>
+      </div>
+      <div class="card span2">
+        <div class="card-h"><h3>What the system decided</h3><span class="muted small">All flows checked so far</span></div>
+        <div id="mix" class="bars"></div>
+      </div>
+      <div class="card" id="sim-card">
+        <div class="card-h"><h3>Send traffic <i class="info" tabindex="0" data-tip="Sends stored records from the test data into the live inbox, exactly like python inject.py in a terminal. No real packets are sent.">?</i></h3>
+          <label class="field">Flows <input id="simcount" type="number" min="1" max="500" value="25" aria-label="Number of flows to send"></label></div>
+        <div class="sim2">
+          <button class="btn sim-btn" data-sc="normal"><b>Normal traffic</b><span>Should stay quiet</span></button>
+          <button class="btn sim-btn danger" data-sc="zero-day"><b>Zero-day attack</b><span id="sim-zd">An attack type hidden from training</span></button>
+        </div>
+        <div class="sim-sec">
+          <label class="tlabel" for="atype">Specific attack</label>
+          <div class="sim-row"><select id="atype"></select><button class="btn" id="send-attack">Send this attack</button></div>
+          <div id="atype-note" class="atype-note"></div>
+        </div>
+        <button class="btn sim-btn wide" id="send-mix"><b>Realistic mix</b><span id="mix-sub">70% normal · 15% zero-day · 15% the attack above, shuffled</span></button>
+        <details class="more"><summary>Stress tests</summary>
+          <div class="sim2">
+            <button class="btn sim-btn" data-sc="synthetic"><b>Unusual traffic</b><span>Normal flows with extreme values</span></button>
+            <button class="btn sim-btn" data-sc="malformed"><b>Broken record</b><span>Must be rejected, never called normal</span></button>
+          </div></details>
+        <p class="muted small">Terminal: <code>python inject.py attack neptune</code> · <code>python inject.py list</code></p>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>Traffic shift <i class="info" tabindex="0" data-tip="Compares recent traffic with the training data feature by feature (PSI). Below 0.10 stable, 0.10 to 0.25 moderate, above 0.25 significant. A warning only: it never changes a verdict or retrains anything.">?</i></h3></div>
+        <div id="drift"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>Your review queue</h3><span class="muted small">Alerts by review status</span></div>
+        <div id="queue" class="queue"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ALERTS ================= -->
+  <section id="view-alerts" class="view" aria-label="Alerts">
+    <div class="toolbar">
+      <div class="tgroup"><span class="tlabel">Verdict</span><div id="vfilter" class="chips"></div></div>
+      <label class="tgroup"><span class="tlabel">Source</span>
+        <select id="ofilter"><option value="">All flows</option><option value="live">Sent by you</option><option value="replay">Test replay</option></select></label>
+      <label class="tgroup"><span class="tlabel">Review status</span>
+        <select id="sfilter"><option value="">Any</option><option value="new">Not reviewed</option><option value="investigating">Investigating</option>
+          <option value="escalated">Escalated</option><option value="resolved">Resolved</option><option value="false_positive">False alarm</option></select></label>
+      <label class="tgroup grow"><span class="tlabel">Search</span>
+        <input id="search" type="search" placeholder="Flow number, host, attack type…"></label>
+      <label class="toggle"><input type="checkbox" id="autoref" checked> Keep updating</label>
+    </div>
+    <div class="split">
+      <div class="card table-card">
+        <table class="tbl" id="tbl">
+          <thead><tr><th>Flow</th><th>Time</th><th>Verdict</th><th>Best match</th><th title="Higher = less like normal traffic">Unusualness</th><th title="Triage urgency from 0 to 100. A sorting aid, not a probability.">Urgency</th><th>What was sent</th><th>Review</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="tbl-empty" class="empty"></div>
+      </div>
+      <aside class="card detail" id="detail" aria-live="polite"></aside>
+    </div>
+    <p class="muted small kbd-hint">Keyboard: <kbd>j</kbd>/<kbd>k</kbd> next or previous alert · <kbd>i</kbd> investigating · <kbd>e</kbd> escalate · <kbd>r</kbd> resolved · <kbd>f</kbd> false alarm · <kbd>/</kbd> search</p>
+  </section>
+
+  <!-- ================= HOW IT DECIDES ================= -->
+  <section id="view-how" class="view" aria-label="How it decides">
+    <div class="card how-hero">
+      <h2>How every flow gets its verdict</h2>
+      <p class="lead">Two models look at each flow independently. Fixed rules combine their answers, so the same inputs always give the same verdict, and every verdict can be traced back to a rule.</p>
+      <div class="pipe" id="pipe"></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><div class="card-h"><h3>The decision rules</h3><span class="muted small">Applied in this order, first match wins</span></div><table class="rules" id="rules"></table></div>
+      <div class="card"><div class="card-h"><h3>Confidence bars per attack class</h3><span class="muted small">A class "fits" a flow only if the classifier's score reaches its bar</span></div>
+        <table class="mini" id="passmarks"></table>
+        <p class="muted small" id="passnote"></p></div>
+      <div class="card"><div class="card-h"><h3>What the attack classifier relies on most</h3><span class="muted small">Top 8 of all features</span></div><div id="imp" class="bars"></div></div>
+      <div class="card"><div class="card-h"><h3>Words used in this console</h3></div><dl class="gloss" id="gloss"></dl></div>
+    </div>
+  </section>
+
+  <!-- ================= MODEL RESULTS ================= -->
+  <section id="view-eval" class="view" aria-label="Model results">
+    <div class="card"><div class="card-h"><h3>Every trained model on its untouched test data</h3><span class="muted small">Click a row to use that model in the console</span></div>
+      <div class="table-scroll"><table class="tbl" id="exp"><thead></thead><tbody></tbody></table></div></div>
+    <div class="kpis" id="eval-kpis"></div>
+    <div class="grid two">
+      <div class="card"><div class="card-h"><h3>How often each traffic type was recognised <i class="info" tabindex="0" data-tip="For each type the model was trained on: the share of test flows the classifier labelled correctly.">?</i></h3><span class="muted small">Test data</span></div><div id="recog" class="bars"></div></div>
+      <div class="card"><div class="card-h"><h3>What happened to each traffic type</h3><span class="muted small">Final verdict, test data</span></div><div id="outcome"></div></div>
+      <div class="card"><div class="card-h"><h3>Data leakage checks</h3><span class="muted small">Guards against results that look better than they are</span></div><ul id="leak" class="checks"></ul></div>
+      <div class="card"><div class="card-h"><h3>Speed on this machine</h3></div><div id="perf" class="kv"></div></div>
+    </div>
+  </section>
+</main>
+<dialog id="helpdlg" aria-labelledby="help-title">
+  <div class="dlg-h"><h2 id="help-title">How to use this console</h2><button class="close" id="help-close" aria-label="Close help">×</button></div>
+  <div class="dlg-b">
+    <h3>What am I looking at?</h3>
+    <p>A detector that checks network connections one by one and tells you whether each looks normal, like a known attack, or like an attack it has <b>never seen</b> (a possible zero-day). Every alert explains itself in plain words.</p>
+    <h3>Where does the data come from?</h3>
+    <p id="help-data"></p>
+    <h3>Try it in three steps</h3>
+    <ol class="help-steps">
+      <li><b>Play test traffic</b> (top bar). Recorded connections stream in and get checked.</li>
+      <li><b>Send zero-day attack</b> (Live monitor). Sends attacks of the type the model never saw in training.</li>
+      <li><b>Open an alert</b> (Alerts tab). Read "In short", then the checks below it.</li>
+    </ol>
+    <h3>What the verdicts mean</h3>
+    <dl class="help-verdicts" id="help-verdicts"></dl>
+    <p class="muted small">Nothing here watches a real network. Your reviews are saved to an audit log and never change the model.</p>
+  </div>
+</dialog>
+<div id="tip" class="tip" role="tooltip" hidden></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>
