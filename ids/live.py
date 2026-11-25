@@ -91,6 +91,22 @@ def stream(rows, dataset, scenario, source_ip, rate, path=None, experiment=None)
     stream_items([(row, scenario, source_ip) for _, row in rows.iterrows()], dataset, rate, path, experiment)
 
 
+def stream_random(schema, records, rng, shares=(0.6, 0.15, 0.25), novel_types=()):
+    """Endless generator of single random flows: normal, zero-day, or any other attack type (one at a time)."""
+    from .data import BENIGN
+    t = records["truth"]
+    other = t["label"].ne(BENIGN) & t["label"].ne(schema["holdout_family"])
+    kinds = ["normal", "zero-day", "other"]
+    while True:
+        kind = kinds[rng.choice(3, p=np.asarray(shares) / sum(shares))]
+        if kind == "other":
+            # pick an attack TYPE uniformly first, so rare types (U2R, new types) appear, not only neptune
+            raw = rng.choice(sorted(t.loc[other, "label_raw"].unique()))
+            yield kind, plan_items(schema, records, "attack", 1, rng, raw, novel_types)[0]
+        else:
+            yield kind, plan_items(schema, records, kind, 1, rng, novel_types=novel_types)[0]
+
+
 def stream_items(items, dataset, rate, path=None, experiment=None):
     """Send (row, scenario, source) items in order, `rate` per second (0 = as fast as possible)."""
     for i, (row, scenario, source_ip) in enumerate(items):

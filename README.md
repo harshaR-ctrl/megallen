@@ -64,6 +64,8 @@ versions and the git commit go into `run_manifest.json`.
 python server.py                  # open http://127.0.0.1:8000
 
 # terminal 2 (or use the Simulate panel in the console)
+python inject.py                  # endless random stream (normal + zero-days + random attacks); prints the
+                                  #   dashboard's verdict next to each flow. Ctrl+C stops, --count N limits
 python inject.py list             # every attack type you can send and what it is to this model
 python inject.py normal           # normal traffic
 python inject.py zero-day         # the attack family this model never saw (Probe for lofo-probe-grouped)

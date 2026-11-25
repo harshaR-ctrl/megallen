@@ -62,6 +62,7 @@ class Engine:
             self.name, self.bundle, self.records = name, bundle, records
             self.schema, self.cal = bundle["feature_schema"], bundle["calibration"]
             self.events, self.detail, self.order = {}, {}, []
+            self.by_ref = {}  # inbox event_id -> console event id, so inject.py can show the dashboard's verdict
             self.frames = {"replay": None, "live": None}
             self.next_id, self.cursor, self.running, self.rate = 1, 0, False, 200
             self.offset = live.INBOX.stat().st_size if live.INBOX.exists() else 0
@@ -73,6 +74,8 @@ class Engine:
     def _ingest(self, source, X, meta, res, scenario=None):
         eids = pd.Index(range(self.next_id, self.next_id + len(res)))
         self.next_id += len(res)
+        if source == "live":
+            self.by_ref.update(zip(map(str, res.index), map(int, eids)))
         X = X.loc[res.index].set_axis(eids)  # align by the original row/event index, then re-key
         res, meta = res.set_axis(eids), meta.loc[res.index].set_axis(eids)
         num = X.reindex(columns=self.schema["numeric"]).apply(pd.to_numeric, errors="coerce")
@@ -106,6 +109,8 @@ class Engine:
         while len(self.order) > MAX_EVENTS:
             old = self.order.pop(0)
             self.events.pop(old, None), self.detail.pop(old, None)
+        if len(self.by_ref) > MAX_EVENTS:
+            self.by_ref = {r: i for r, i in self.by_ref.items() if i in self.events}
 
     def tick(self, dt):
         with self.lock:
@@ -258,6 +263,20 @@ def inject(cmd: InjectCmd):
         k = name.split(":")[0].split(" (")[0]
         kinds[k] = kinds.get(k, 0) + 1
     return {"queued": len(items), "scenario": cmd.scenario, "attack": cmd.attack, "breakdown": kinds}
+
+
+@app.get("/api/verdicts")
+def verdicts(refs: str = ""):
+    """Dashboard verdicts for flows sent by inject.py, looked up by their inbox event ids."""
+    wanted = [r for r in refs.split(",") if r][:200]
+    with engine.lock:
+        out = {}
+        for r in wanted:
+            eid = engine.by_ref.get(r)
+            if eid in engine.events:
+                e = engine.events[eid]
+                out[r] = {"id": eid, "verdict": e["verdict"], "candidate": e["candidate"]}
+        return {"bundle": engine.name, "verdicts": out}
 
 
 @app.get("/api/events")

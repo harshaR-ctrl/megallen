@@ -277,6 +277,7 @@ pip install -r requirements.txt
 python run.py nsl_kdd --holdout Probe        # train + evaluate one model (also DoS, R2L)
 python -m pytest tests -q                    # 45 tests
 python server.py                             # console at http://127.0.0.1:8000
+python inject.py                             # endless random stream, dashboard verdicts printed live
 python inject.py list                        # what you can inject
 python inject.py zero-day                    # simulated zero-day
 python inject.py attack neptune              # a specific known attack

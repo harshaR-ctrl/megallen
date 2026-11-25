@@ -431,3 +431,39 @@ def test_inject_api_specific_attack_and_mix(tmp_path, monkeypatch):
     assert c.post("/api/inject", json={"scenario": "attack", "attack": "nosuch", "count": 5}).status_code == 400
     assert c.post("/api/inject", json={"scenario": "attack", "attack": "../x", "count": 5}).status_code == 422
     assert c.post("/api/inject", json={"scenario": "mix", "count": 5, "zero_day_share": 0.8, "attack_share": 0.5}).status_code == 422
+
+
+def test_random_stream_mixes_normal_zero_days_and_other_attacks(trained):
+    from ids import live
+    df, info, part, bundle = trained
+    test = df[part == "test"]
+    records = {"X": test[info["features"]], "truth": test[["label", "label_raw"]]}
+    gen = live.stream_random(bundle["feature_schema"], records, np.random.default_rng(0), (0.5, 0.25, 0.25))
+    kinds, labels = [], []
+    for _ in range(200):
+        kind, (row, scenario, source) = next(gen)
+        kinds.append(kind)
+        labels.append(records["truth"].loc[row.name, "label"])
+        assert (kind == "normal") == (labels[-1] == "BENIGN")
+        assert (kind == "zero-day") == (labels[-1] == "PortScan")  # the held-out family
+    assert set(kinds) == {"normal", "zero-day", "other"} and 60 < kinds.count("normal") < 140
+
+
+@pytest.mark.skipif(not list(pipeline.ARTIFACTS.glob("*/*/run_manifest.json")), reason="needs a trained bundle")
+def test_verdict_lookup_matches_dashboard(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from ids import live
+    monkeypatch.setattr(live, "INBOX", tmp_path / "inbox.jsonl")
+    import server
+    server.engine.load(server.engine.name)
+    c = TestClient(server.app)
+    gen = live.stream_random(server.engine.schema, server.engine.records, np.random.default_rng(1))
+    refs = []
+    for _ in range(12):
+        _, (row, scenario, source) = next(gen)
+        refs.append(live.write_event(row.to_dict(), server.engine.schema["dataset"], scenario, source)["event_id"])
+    server.engine.tick(0.1)
+    got = c.get("/api/verdicts", params={"refs": ",".join(refs + ["unknown-ref"])}).json()["verdicts"]
+    assert set(got) == set(refs)  # every sent flow found, unknown ref ignored
+    for r, v in got.items():
+        assert c.get(f"/api/events/{v['id']}").json()["event"]["verdict"] == v["verdict"]
