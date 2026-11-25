@@ -101,13 +101,10 @@
           </div></details>
         <p class="muted small">Terminal: <code>python inject.py attack neptune</code> · <code>python inject.py list</code></p>
       </div>
-      <div class="card">
-        <div class="card-h"><h3>Traffic shift <i class="info" tabindex="0" data-tip="Compares recent traffic with the training data feature by feature (PSI). Below 0.10 stable, 0.10 to 0.25 moderate, above 0.25 significant. A warning only: it never changes a verdict or retrains anything.">?</i></h3></div>
+      <div class="card span2">
+        <div class="card-h"><h3>Traffic shift <i class="info" tabindex="0" data-tip="The model learned from one set of traffic. We keep comparing the newest 2,000 connections with it, measurement by measurement. Technical name: Population Stability Index (PSI).">?</i></h3>
+          <span class="muted small">Newest 2,000 connections vs the training data</span></div>
         <div id="drift"></div>
-      </div>
-      <div class="card">
-        <div class="card-h"><h3>Your review queue</h3><span class="muted small">Alerts by review status</span></div>
-        <div id="queue" class="queue"></div>
       </div>
     </div>
   </section>

@@ -288,6 +288,23 @@ dialog#helpdlg::backdrop { background: rgba(0,0,0,.6); }
 details.more { margin-top: 10px; } details.more summary { margin-top: 0; font-size: 13px; }
 details.more .sim2 { margin-top: 8px; }
 
+/* traffic shift */
+.shift { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 24px; align-items: start; }
+.shift-q { font-size: 13px; color: var(--ink2); margin-bottom: 8px; }
+.shift-a { display: flex; align-items: center; gap: 12px; font-size: 22px; font-weight: 680; letter-spacing: -.01em; margin-bottom: 8px; }
+.shift-why { color: var(--ink); font-size: 14px; max-width: 46ch; }
+.shift-foot { color: var(--ink3); font-size: 12.5px; margin: 0; }
+.shift-side { border-left: 1px solid var(--line); padding-left: 24px; }
+.shift-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.shift-list li { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.shift-list li:last-child { border-bottom: 0; }
+.shift-name { min-width: 0; }
+.shift-lvl { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; white-space: nowrap; }
+.meter { display: inline-flex; gap: 3px; }
+.meter i { width: 7px; height: 16px; border-radius: 2px; background: var(--line2); }
+.shift-a .meter i { width: 8px; height: 22px; }
+@media (max-width: 900px) { .shift { grid-template-columns: 1fr; } .shift-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; } }
+
 /* simple bars (replace complex charts) */
 .bars { display: grid; gap: 12px; }
 .brow { display: grid; grid-template-columns: minmax(110px, 38%) 1fr 92px; gap: 12px; align-items: center; font-size: 13.5px; }

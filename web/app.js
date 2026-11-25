@@ -172,7 +172,7 @@ function renderMonitor(changed) {
     kpi("Possible zero-days", int(c.UNKNOWN_ANOMALY), "Unusual and unlike any known attack", V.UNKNOWN_ANOMALY[2], { alert: c.UNKNOWN_ANOMALY > 0, onclick: filterTo(["UNKNOWN_ANOMALY"]), title: "Show these in Alerts" }),
     kpi("Known attacks", int(c.KNOWN_ATTACK), "Recognised attack types", V.KNOWN_ATTACK[2], { onclick: filterTo(["KNOWN_ATTACK"]), title: "Show these in Alerts" }),
     kpi("Needs a look", int(unclear), "The system was not sure", V.UNCERTAIN_REVIEW[2], { onclick: filterTo(["UNCERTAIN_REVIEW", "DEGRADED_REVIEW", "PROCESSING_ERROR"]), title: "Show these in Alerts" }));
-  renderFeed(); renderQueue();
+  renderFeed();
   const now = performance.now();
   if (!changed && now - lastPlot < 4000) return;
   lastPlot = now;
@@ -212,16 +212,28 @@ function renderMix() {
   put($("#mix"), groups.map(([name, v, n, vs]) => barRow(name, null, n / total, V[v][2],
     [int(n), h("small", {}, pct(n / total, 0))], vs ? filterTo(vs) : null)));
 }
+// 3-step meter: how big a change is, shown as filled segments instead of a number.
+const meter = (n, col) => h("span", { class: "meter", "aria-hidden": "true" }, [1, 2, 3].map((i) => h("i", { style: i <= n ? `background:${col}` : "" })));
 function renderDrift() {
   const d = S.state.drift, f = d.features || {}, ks = Object.keys(f).slice(0, 3);
-  const st = { stable: ["Stable", V.NORMAL[2]], moderate_shift: ["Some change", V.UNCERTAIN_REVIEW[2]], significant_shift: ["Large change", V.UNKNOWN_ANOMALY[2]],
-    insufficient_batch: ["Measuring…", INK2] }[d.status];
-  put($("#drift"), h("div", { class: "big-status", style: `color:${st[1]}` }, dot(st[1]), st[0]),
-    h("p", { class: "muted small" }, ks.length ? "Recent traffic compared with the training data. Biggest changes:" : "Measured once 500 flows have arrived."),
-    ks.length > 0 && h("div", { class: "bars stacked" }, ks.map((k) => barRow(cap(d.described?.[k] || k), null, f[k] / 0.5,
-      f[k] >= 0.25 ? V.UNKNOWN_ANOMALY[2] : f[k] >= 0.1 ? V.UNCERTAIN_REVIEW[2] : V.NORMAL[2],
-      f[k] >= 0.25 ? "large" : f[k] >= 0.1 ? "some" : "small", null, false))),
-    h("p", { class: "muted small", style: "margin-top:10px" }, "A warning only. It never changes a verdict."));
+  const ANSWER = {
+    stable: [1, V.NORMAL[2], "No, it looks like the training traffic", "The model is seeing the kind of traffic it learned from, so its verdicts can be trusted as usual."],
+    moderate_shift: [2, V.UNCERTAIN_REVIEW[2], "A little different", "Some parts of the traffic have changed. Verdicts still work, but keep an eye on them."],
+    significant_shift: [3, V.UNKNOWN_ANOMALY[2], "Yes, quite different", "The model is seeing traffic unlike what it learned from, so it may make more mistakes. Double-check its alerts."],
+    insufficient_batch: [0, INK2, "Not sure yet", "We need at least 500 connections before we can compare."],
+  };
+  const [lvl, col, answer, why] = ANSWER[d.status];
+  const change = (v) => (v >= 0.25 ? [3, V.UNKNOWN_ANOMALY[2], "Big change"] : v >= 0.1 ? [2, V.UNCERTAIN_REVIEW[2], "Some change"] : [1, V.NORMAL[2], "Small change"]);
+  put($("#drift"), h("div", { class: "shift" },
+    h("div", { class: "shift-main" },
+      h("div", { class: "shift-q" }, "Does recent traffic look different from what the model learned on?"),
+      h("div", { class: "shift-a", style: `color:${col}` }, meter(lvl, col), answer),
+      h("p", { class: "shift-why" }, why),
+      h("p", { class: "shift-foot" }, "Just a heads-up: this never changes a verdict.")),
+    ks.length > 0 && h("div", { class: "shift-side" },
+      h("div", { class: "shift-q" }, "What changed most"),
+      h("ul", { class: "shift-list" }, ks.map((k) => { const [n, c, word] = change(f[k]);
+        return h("li", {}, h("span", { class: "shift-name" }, cap(d.described?.[k] || k)), h("span", { class: "shift-lvl", style: `color:${c}` }, meter(n, c), word)); })))));
 }
 function renderFeed() {
   const zd = S.events.filter((e) => e.verdict === "UNKNOWN_ANOMALY" && (S.feedSrc === "all" || e.source === "live")).slice(-60).reverse();
@@ -239,14 +251,6 @@ function renderFeed() {
       h("span", { class: "sub" }, [time(e.t), level(e.score), mask(e.src) && `from ${mask(e.src)}`, e.incident && "part of a burst from one host"].filter(Boolean).join(" · ")));
   }));
 }
-function renderQueue() {
-  const s = S.state.status, max = Math.max(1, ...Object.values(s));
-  const col = { new: "#338ced", investigating: "#f5b524", escalated: "#e5484d", resolved: "#737a85", false_positive: "#737a85" };
-  put($("#queue"), Object.keys(STATUS).map((k) => h("div", { class: "qrow", role: "button", tabindex: "0", title: `Show alerts that are ${STATUS[k].toLowerCase()}`,
-    onclick: () => { $("#sfilter").value = k; show("alerts"); } },
-    h("span", {}, STATUS[k]), h("span", { class: "qbar" }, h("i", { style: `width:${(100 * s[k]) / max}%;background:${col[k]}` })), h("span", { class: "mono", style: "text-align:right" }, int(s[k])))));
-}
-
 // ---------------- alerts ----------------
 function chipsInit() {
   put($("#vfilter"), ORDER.map((v) => h("button", { class: `chip${S.filterV.has(v) ? " on" : ""}`, "aria-pressed": String(S.filterV.has(v)), title: V[v][1],
@@ -474,7 +478,7 @@ async function loadHow() {
     h("div", { class: "pnode" }, h("div", { class: "pn" }, "Step 4"), h("b", {}, "Verdict"),
       h("div", { class: "pv" }, ORDER.slice(0, 3).concat("NORMAL").map((v) => h("div", {}, pill(v))))),
     h("div", { class: "pnode" }, h("div", { class: "pn" }, "Step 5"), h("b", {}, "Urgency and explanation"),
-      h("p", {}, "Urgency (0-100) sorts the queue; it never changes the verdict. Every alert explains which check and rule decided it.")));
+      h("p", {}, "Urgency (0-100) sorts the alert list; it never changes the verdict. Every alert explains which check and rule decided it.")));
   put($("#rules"), [...rulesTable(0).childNodes]);
   put($("#passmarks"), h("tr", {}, h("th", {}, "Class"), h("th", {}, "Confidence bar"), h("th", {}, "Set on"), h("th", {}, "")),
     bars.map(([c, b]) => h("tr", {}, h("td", {}, h("b", {}, c)), h("td", { class: "num" }, pct(b.pass_mark)), h("td", { class: "num" }, `${int(b.n)} flows`),
@@ -490,7 +494,7 @@ async function loadHow() {
     ["Known attack", "A flow that clearly fits exactly one attack type the classifier learned."],
     ["Fits / confidence bar", "A class fits a flow when the classifier's score for it reaches that class's bar."],
     ["Unclear", "Not unusual, but no single class fits. A person should look."],
-    ["Urgency", "A 0-100 score for sorting the queue. It is a heuristic, not a probability."],
+    ["Urgency", "A 0-100 score for sorting the alert list. It is a heuristic, not a probability."],
     ["Incident", "Three or more alerts from the same host within 30 seconds, grouped. No alert is hidden."],
     ["Traffic shift", "How far recent traffic has moved from the training data. A warning only."],
     ["False alarm", "Your review that an alert was not a real attack. Saved for audit; never retrains the model."],
