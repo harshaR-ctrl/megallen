@@ -25,7 +25,7 @@ const RULES = [  // plain-words version of the decision table (architecture.md 6
   ["No", "None, or several", "UNCERTAIN_REVIEW"],
   ["Any", "Input broken or a model failed", "PROCESSING_ERROR", "or Model problem; never Normal"],
 ];
-const INK2 = css("--text-2"), INK3 = css("--text-3"), GRID = css("--line"), AXIS = css("--line-strong"), BLUE = css("--blue");
+const INK2 = css("--text-2"), INK3 = css("--text-3"), GRID = css("--line"), AXIS = css("--line-strong"), LIME = css("--lime");
 const FONT = "Inter, system-ui, sans-serif", MONO = "JetBrains Mono, Consolas, monospace";
 
 const S = { events: [], byId: new Map(), state: null, sel: null, rows: [], view: "monitor", feedSrc: "live", seenFeed: new Set(),
@@ -186,7 +186,7 @@ function renderMonitor(changed) {
 function barRow(label, sub, frac, color, value, onclick, showDot = true) {
   return h("div", { class: `brow${onclick ? " click" : ""}`, onclick, role: onclick ? "button" : null, tabindex: onclick ? "0" : null },
     h("div", { class: "blabel" }, showDot && color && dot(color), h("span", {}, label, sub && h("small", {}, sub))),
-    h("div", { class: "btrack" }, h("i", { style: `width:${Math.max(0, Math.min(1, frac)) * 100}%;background:${color || BLUE}` })),
+    h("div", { class: "btrack" }, h("i", { style: `width:${Math.max(0, Math.min(1, frac)) * 100}%;background:${color || LIME}` })),
     h("div", { class: "bval" }, value));
 }
 // One line per verdict group; each has its own dash so colour is never the only cue (§6). Zero-day is drawn last, on top.
@@ -231,12 +231,12 @@ function renderDrift() {
   const d = S.state.drift, f = d.features || {}, ks = Object.keys(f).slice(0, 3);
   const ANSWER = {
     stable: [1, V.NORMAL[2], "No, it looks like the training traffic", "The model is seeing the kind of traffic it learned from, so its verdicts can be trusted as usual."],
-    moderate_shift: [2, V.UNCERTAIN_REVIEW[2], "A little different", "Some parts of the traffic have changed. Verdicts still work, but keep an eye on them."],
-    significant_shift: [3, V.UNKNOWN_ANOMALY[2], "Yes, quite different", "The model is seeing traffic unlike what it learned from, so it may make more mistakes. Double-check its alerts."],
+    moderate_shift: [2, css("--warn"), "A little different", "Some parts of the traffic have changed. Verdicts still work, but keep an eye on them."],
+    significant_shift: [3, css("--warn"), "Yes, quite different", "The model is seeing traffic unlike what it learned from, so it may make more mistakes. Double-check its alerts."],
     insufficient_batch: [0, INK2, "Not sure yet", "We need at least 500 connections before we can compare."],
   };
   const [lvl, col, answer, why] = ANSWER[d.status];
-  const change = (v) => (v >= 0.25 ? [3, V.UNKNOWN_ANOMALY[2], "Big change"] : v >= 0.1 ? [2, V.UNCERTAIN_REVIEW[2], "Some change"] : [1, V.NORMAL[2], "Small change"]);
+  const change = (v) => (v >= 0.25 ? [3, LIME, "Big change"] : v >= 0.1 ? [2, LIME, "Some change"] : [1, LIME, "Small change"]);  // single-hue: drift is not a verdict
   put($("#drift"), h("div", { class: "shift" },
     h("div", { class: "shift-main" },
       h("div", { class: "shift-q" }, "Does recent traffic look different from what the model learned on?"),
@@ -434,7 +434,7 @@ function explanation(x, e) {
       return h("div", { class: "shaprow" },
         h("div", { class: "sd" }, cap(t.description), h("small", {}, `${t.feature} = ${t.value}`)),
         h("div", { title: `contribution ${t.contribution.toFixed(4)}` },
-          h("div", { class: "sbar" }, h("i", { style: `${towards ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:${towards ? BLUE : INK3}` })),
+          h("div", { class: "sbar" }, h("i", { style: `${towards ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:${towards ? LIME : INK3}` })),
           h("div", { class: "muted small", style: "text-align:center;margin-top:4px" }, towards ? `Pushes towards ${s.explained_class}` : "Pushes away")));
     })), h("div", { class: "muted small", style: "margin-top:6px" }, "TreeSHAP of the attack classifier: how much each value moved its score. It shows what the model used, not what caused the traffic."));
   } else out.push(h("div", { class: "muted" }, `Not available: ${s.reason || "the classifier did not run"}.`));
@@ -522,7 +522,7 @@ async function loadHow() {
   put($("#passnote"), `${m.holdout} attacks were removed from training and calibration, so they act as a zero-day this model has never seen.`,
     m.rare.length ? ` ${m.rare.join(", ")} had too few examples to learn reliably and is treated the same way.` : "");
   const imp = m.importance.slice(0, 8), top = imp[0]?.importance || 1;
-  put($("#imp"), imp.map((f) => barRow(cap(f.description), f.feature, f.importance / top, BLUE, pct(f.importance, 1), null, false)),
+  put($("#imp"), imp.map((f) => barRow(cap(f.description), f.feature, f.importance / top, LIME, pct(f.importance, 1), null, false)),
     h("p", { class: "muted small" }, "Longer bar = the classifier uses this feature more often to separate attack types."));
   const G = [["Zero-day", "An attack type the model has never seen. Here: a type removed from training on purpose."],
     ["Unusualness score", "How unlike normal traffic a flow is. Higher means less normal."],
@@ -571,7 +571,7 @@ async function loadEval() {
   const pc = cur.per_class || {};
   put($("#recog"), cur.confusion ? cur.confusion.labels.map((c) => { const r = pc[c]?.recall ?? 0;
     return barRow(c === "BENIGN" ? "Normal traffic" : c, `${int(pc[c]?.support)} test flows`, r, r >= 0.8 ? V.NORMAL[2] : r >= 0.5 ? V.UNCERTAIN_REVIEW[2] : V.UNKNOWN_ANOMALY[2], pct(r, 0), null, false); }) : "—",
-    h("p", { class: "muted small" }, "Green 80% or more · amber 50-80% · red below 50%."));
+    h("p", { class: "muted small" }, "Cyan 80% or more · violet 50-80% · red below 50%."));
   const vbl = cur.verdicts_by_label;
   const OUT = [["Alerted", V.UNKNOWN_ANOMALY[2], ["UNKNOWN_ANOMALY", "KNOWN_ATTACK"]], ["Sent to review", V.UNCERTAIN_REVIEW[2], ["UNCERTAIN_REVIEW", "DEGRADED_REVIEW", "PROCESSING_ERROR"]], ["Called normal", V.NORMAL[2], ["NORMAL"]]];
   put($("#outcome"), h("div", { class: "legend" }, OUT.map(([n, col]) => h("span", {}, dot(col), n))),
@@ -582,7 +582,7 @@ async function loadEval() {
       return h("div", { class: "orow" }, h("b", {}, name), h("div", { class: "stack", title: parts.map(([n, , f]) => `${n} ${pct(f, 0)}`).join(" · ") },
         parts.filter(([, , f]) => f > 0).map(([n, col, f]) => h("i", { style: `width:${f * 100}%;background:${col}` }, f >= 0.08 ? pct(f, 0) : ""))));
     }),
-    h("p", { class: "muted small" }, "For attack types, more red is better. For normal traffic, more green is better."));
+    h("p", { class: "muted small" }, "For attack types, more red is better. For normal traffic, more cyan is better."));
   const plain = { holdout_absent_from_train_validation_conf_cal: "The hidden attack never appears in training or calibration data",
     anom_cal_benign_only: "The alert line was set on normal traffic only", partitions_disjoint: "No flow is used in two data splits",
     anom_cal_conf_cal_row_overlap: "The two calibration sets share no flows" };
