@@ -2,13 +2,15 @@
 // Megallen console. Event text is untrusted (it can come from the inbox file): everything is built with h()/put(),
 // which only ever create text nodes. Never use innerHTML with event data.
 
+// Colours come from the design tokens in style.css (design (1).md §1); JS never hard-codes hex.
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const V = {  // verdict -> plain name, description, colour, plotly symbol (shape = second channel besides colour)
-  UNKNOWN_ANOMALY: ["Possible zero-day", "Unusual and matches no known attack", "#e5484d", "triangle-up"],
-  KNOWN_ATTACK: ["Known attack", "Matches one attack type the model was trained on", "#f18a59", "diamond"],
-  UNCERTAIN_REVIEW: ["Unclear", "Not unusual, but no single class fits clearly", "#f5b524", "square"],
-  DEGRADED_REVIEW: ["Model problem", "A model was unavailable, so it was not called normal", "#9c9c9c", "x"],
-  PROCESSING_ERROR: ["Bad record", "Failed input checks, so no model ran on it", "#7c838d", "cross"],
-  NORMAL: ["Normal", "Looks like normal traffic", "#2fbf4a", "circle"],
+  UNKNOWN_ANOMALY: ["Possible zero-day", "Unusual and matches no known attack", css("--v-zeroday"), "triangle-up"],
+  KNOWN_ATTACK: ["Known attack", "Matches one attack type the model was trained on", css("--v-known"), "diamond"],
+  UNCERTAIN_REVIEW: ["Unclear", "Not unusual, but no single class fits clearly", css("--v-review"), "square"],
+  DEGRADED_REVIEW: ["Model problem", "A model was unavailable, so it was not called normal", css("--v-invalid"), "x"],
+  PROCESSING_ERROR: ["Bad record", "Failed input checks, so no model ran on it", css("--v-invalid"), "cross"],
+  NORMAL: ["Normal", "Looks like normal traffic", css("--v-normal"), "circle"],
 };
 const ORDER = Object.keys(V);
 const STATUS = { new: "Not reviewed", investigating: "Investigating", escalated: "Escalated", resolved: "Resolved", false_positive: "False alarm" };
@@ -23,7 +25,8 @@ const RULES = [  // plain-words version of the decision table (architecture.md 6
   ["No", "None, or several", "UNCERTAIN_REVIEW"],
   ["Any", "Input broken or a model failed", "PROCESSING_ERROR", "or Model problem; never Normal"],
 ];
-const INK2 = "#a3a9b3", GRID = "#262a30", AXIS = "#3a3f47";
+const INK2 = css("--text-2"), INK3 = css("--text-3"), GRID = css("--line"), AXIS = css("--line-strong"), BLUE = css("--blue");
+const FONT = "Inter, system-ui, sans-serif", MONO = "JetBrains Mono, Consolas, monospace";
 
 const S = { events: [], byId: new Map(), state: null, sel: null, rows: [], view: "monitor", feedSrc: "live", seenFeed: new Set(),
             filterV: new Set(["UNKNOWN_ANOMALY"]), es: null, lastId: 0, expCache: new Map(), model: null };
@@ -44,7 +47,7 @@ function h(tag, props, ...kids) {
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(3).filter((k) => k != null && k !== false).map((k) => (k instanceof Node ? k : document.createTextNode(String(k)))));
 const dot = (c) => h("span", { class: "dot", style: `background:${c}` });
 const vname = (v) => V[v][0];
-const pill = (v) => h("span", { class: "pill", style: `color:${V[v][2]}` }, dot(V[v][2]), vname(v));
+const pill = (v) => h("span", { class: "pill", style: `color:${V[v][2]};background:${V[v][2]}24` }, dot(V[v][2]), vname(v));  // 24 hex = 14% soft fill
 const fmt = (x, d = 3) => (x == null || Number.isNaN(x) ? "—" : Number(x).toFixed(d));
 const int = (x) => (x ?? 0).toLocaleString();
 const pct = (x, d = 1) => (x == null ? "—" : `${(100 * x).toFixed(d)}%`);
@@ -74,17 +77,18 @@ async function api(path, body) {
 function toast(title, sub, kind = "alert", onclick) {
   const t = h("div", { class: `toast ${kind}`, role: "status", onclick: () => { onclick && onclick(); t.remove(); } }, h("b", {}, title), h("span", { class: "muted small" }, sub));
   $("#toasts").append(t);
-  setTimeout(() => t.remove(), 6500);
+  setTimeout(() => t.remove(), 5000);
   while ($("#toasts").children.length > 4) $("#toasts").firstChild.remove();
 }
 
 // ---------------- plots ----------------
 const base = (extra = {}) => ({
-  paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: INK2, size: 12, family: "Segoe UI, Inter, sans-serif" },
+  paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: INK2, size: 12, family: FONT },
   margin: { l: 52, r: 14, t: 10, b: 36 }, showlegend: true,
-  legend: { orientation: "h", x: 1, xanchor: "right", y: 1.14, font: { color: INK2 } },
-  xaxis: { gridcolor: GRID, linecolor: AXIS, zeroline: false }, yaxis: { gridcolor: GRID, linecolor: AXIS, zeroline: false },
-  hoverlabel: { bgcolor: "#0a0b0e", bordercolor: "#343941", font: { color: "#eceef1" } }, ...extra });
+  legend: { orientation: "h", x: 0, xanchor: "left", y: 1.12, font: { color: INK2, size: 12 }, bgcolor: "rgba(0,0,0,0)" },
+  xaxis: { showgrid: false, linecolor: AXIS, tickcolor: AXIS, zeroline: false, tickfont: { family: MONO, size: 11, color: INK3 } },
+  yaxis: { gridcolor: GRID, gridwidth: 1, linecolor: AXIS, zeroline: false, tickfont: { family: MONO, size: 11, color: INK3 } },
+  hoverlabel: { bgcolor: css("--surface-3"), bordercolor: AXIS, font: { family: FONT, size: 12, color: css("--text") } }, ...extra });
 const cfg = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d", "toImage"] };
 
 // ---------------- stream ----------------
@@ -127,7 +131,7 @@ function renderTop() {
   $("#progtxt").textContent = r.cursor ? `${int(r.cursor)} of ${int(r.total)} connections played` : "Not started";
   if (r.cursor) stepDone(1);
   const n = st.status.new; $("#newcount").textContent = int(n); $("#newcount").className = n ? "count" : "count zero";
-  $("#ctx").textContent = `Hidden from training: ${st.holdout} · alert line ${fmt(st.threshold)}`;
+  put($("#ctx"), "Hidden from training: ", h("b", {}, st.holdout), ` · alert line ${fmt(st.threshold)}`);
   $("#sim-zd").textContent = `${st.holdout} attacks, hidden from training`;
   if (st.mismatch && st.mismatch.length && S.warned !== st.mismatch.join()) {
     S.warned = st.mismatch.join();
@@ -138,8 +142,8 @@ function renderTop() {
   if (S.stripFor !== st.bundle) {
     S.stripFor = st.bundle;
     put($("#datastrip"), h("span", {}, h("b", {}, "Data: "), `the ${ds} test set, ${int(st.replay.total)} real network connections ${era}. Not a live network.`),
-      h("span", {}, h("b", {}, "Zero-day: "), `this model never saw any ${st.holdout} attacks, so ${st.holdout} traffic plays the role of a brand-new attack.`),
-      h("button", { class: "btn", onclick: openHelp }, "How does this work?"));
+      h("span", {}, h("b", {}, "Zero-day: "), "this model never saw any ", h("code", {}, st.holdout), " attacks, so that traffic plays the role of a brand-new attack."),
+      h("button", { class: "btn ghost", onclick: openHelp }, "How does this work?"));
     put($("#help-data"), `From the public ${ds} research dataset: ${int(st.replay.total)} network connections ${era}, each summarised into ${ds === "NSL-KDD" ? 41 : "about 80"} measurements (bytes sent, connection length, failed logins and so on) and labelled normal or attack. The models trained on a separate part of the dataset. "Play test traffic" streams the unseen part through them. "Send zero-day attack" sends ${st.holdout} connections, a type removed from training on purpose.`);
   }
 }
@@ -159,8 +163,8 @@ function newestZeroDay() {
 // ---------------- monitor ----------------
 function kpi(l, v, s, color, opts = {}) {
   return h("div", { class: `kpi${opts.alert ? " alert" : ""}${opts.onclick ? " click" : ""}`, onclick: opts.onclick, tabindex: opts.onclick ? "0" : null,
-    role: opts.onclick ? "button" : null, title: opts.title },
-    h("div", { class: "l" }, color && dot(color), l), h("div", { class: "v" }, v), h("div", { class: "s" }, s));
+    role: opts.onclick ? "button" : null, title: opts.title, style: color ? `--k:${color}` : null },
+    h("div", { class: "l" }, l), h("div", { class: "v" }, v), h("div", { class: "s" }, s));
 }
 const filterTo = (verdicts) => () => { S.filterV = new Set(verdicts); chipsInit(); $("#sfilter").value = ""; show("alerts"); };
 let lastPlot = 0;
@@ -182,24 +186,33 @@ function renderMonitor(changed) {
 function barRow(label, sub, frac, color, value, onclick, showDot = true) {
   return h("div", { class: `brow${onclick ? " click" : ""}`, onclick, role: onclick ? "button" : null, tabindex: onclick ? "0" : null },
     h("div", { class: "blabel" }, showDot && color && dot(color), h("span", {}, label, sub && h("small", {}, sub))),
-    h("div", { class: "btrack" }, h("i", { style: `width:${Math.max(0, Math.min(1, frac)) * 100}%;background:${color || "#338ced"}` })),
+    h("div", { class: "btrack" }, h("i", { style: `width:${Math.max(0, Math.min(1, frac)) * 100}%;background:${color || BLUE}` })),
     h("div", { class: "bval" }, value));
 }
-function plotStream() {  // two lines only: zero-days and known attacks per 10 s
+// One line per verdict group; each has its own dash so colour is never the only cue (§6). Zero-day is drawn last, on top.
+const SERIES = [
+  ["NORMAL", "Normal", { dash: "longdash", width: 1.75, opacity: 0.7 }],
+  ["UNCERTAIN_REVIEW", "Needs a look", { dash: "dash", width: 2.5 }],
+  ["KNOWN_ATTACK", "Known attacks", { dash: "dot", width: 2.5 }],
+  ["UNKNOWN_ANOMALY", "Possible zero-days", { dash: "solid", width: 3, fill: "tozeroy" }],
+];
+function plotStream() {
   const B = 10, N = 18, now = Date.now() / 1000, t0 = Math.floor(now / B) * B - (N - 1) * B;
   const xs = Array.from({ length: N }, (_, i) => new Date((t0 + i * B) * 1000));
-  const count = (v) => { const ys = new Array(N).fill(0);
-    for (const e of S.events) if (e.t >= t0 && e.verdict === v) ys[Math.min(N - 1, Math.floor((e.t - t0) / B))]++;  // no early exit: order is not guaranteed
-    return ys; };
-  const series = [["UNKNOWN_ANOMALY", "Possible zero-days"], ["KNOWN_ATTACK", "Known attacks"]].map(([v, name]) => ({ v, name, y: count(v) }));
-  const traces = series.map(({ v, name, y }) => ({ type: "scatter", mode: "lines", name: `${name}: ${y[N - 1]} in the last 10 s`, x: xs, y,
-    line: { color: V[v][2], width: 3, shape: "spline", smoothing: 0.6 }, fill: "tozeroy", fillcolor: V[v][2] + "1f", hovertemplate: `${name}: %{y}<extra></extra>` }));
-  const total = series.reduce((a, s) => a + s.y.reduce((x, y) => x + y, 0), 0);
-  const lay = base({ showlegend: true, hovermode: "x unified", margin: { l: 40, r: 14, t: 34, b: 30 },
-    legend: { orientation: "h", x: 0, xanchor: "left", y: 1.12, font: { color: "#eceef1", size: 13 } },
-    xaxis: { ...base().xaxis, type: "date", tickformat: "%H:%M", showgrid: false, nticks: 4 },
-    yaxis: { ...base().yaxis, rangemode: "tozero", nticks: 4, title: { text: "flows", font: { size: 12 } } } });
-  if (!total) lay.annotations = [{ xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false, text: "No alerts in the last 3 minutes", font: { color: INK2, size: 14 } }];
+  const group = (v) => (v === "DEGRADED_REVIEW" || v === "PROCESSING_ERROR" ? "UNCERTAIN_REVIEW" : v);
+  const ys = Object.fromEntries(SERIES.map(([v]) => [v, new Array(N).fill(0)]));
+  for (const e of S.events) if (e.t >= t0) ys[group(e.verdict)][Math.min(N - 1, Math.floor((e.t - t0) / B))]++;  // no early exit: order is not guaranteed
+  const traces = SERIES.map(([v, name, st]) => ({ type: "scatter", mode: "lines", name: `${name}: ${ys[v][N - 1]} in the last 10 s`, x: xs, y: ys[v],
+    line: { color: V[v][2], width: st.width, dash: st.dash, shape: "spline", smoothing: 0.6 }, opacity: st.opacity ?? 1,
+    fill: st.fill || "none", fillcolor: st.fill ? `${V[v][2]}24` : undefined, hovertemplate: `${name}: %{y}<extra></extra>` }));
+  const alerts = ["UNKNOWN_ANOMALY", "KNOWN_ATTACK", "UNCERTAIN_REVIEW"].reduce((a, v) => a + ys[v].reduce((x, y) => x + y, 0), 0);
+  const narrow = matchMedia("(max-width: 720px)").matches;
+  const lay = base({ height: narrow ? 280 : 340, hovermode: "x unified", margin: { l: 44, r: 16, t: 28, b: 36 },
+    legend: { ...base().legend, y: narrow ? -0.2 : 1.12, yanchor: narrow ? "top" : "bottom" },
+    xaxis: { ...base().xaxis, type: "date", tickformat: "%H:%M", nticks: 4,
+      showspikes: true, spikemode: "across", spikethickness: 1, spikecolor: AXIS, spikedash: "solid" },
+    yaxis: { ...base().yaxis, rangemode: "tozero", nticks: 4 } });
+  if (!alerts) lay.annotations = [{ xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false, text: "No alerts in the last 3 minutes", font: { color: INK2, size: 14 } }];
   Plotly.react("chart-stream", traces, lay, { displayModeBar: false, responsive: true });
 }
 function renderMix() {
@@ -255,6 +268,7 @@ function renderFeed() {
 // ---------------- alerts ----------------
 function chipsInit() {
   put($("#vfilter"), ORDER.map((v) => h("button", { class: `chip${S.filterV.has(v) ? " on" : ""}`, "aria-pressed": String(S.filterV.has(v)), title: V[v][1],
+    style: `--cs:${V[v][2]}24;--cb:${V[v][2]}73`,
     onclick: (ev) => { S.filterV.has(v) ? S.filterV.delete(v) : S.filterV.add(v); ev.currentTarget.classList.toggle("on"); ev.currentTarget.setAttribute("aria-pressed", String(S.filterV.has(v))); loadAlerts(); } },
     dot(V[v][2]), vname(v))));
 }
@@ -310,8 +324,8 @@ function gauge(score, thr, color) {
   const pos = (x) => `${(100 * (x - lo)) / (hi - lo)}%`;
   return h("div", {},
     h("div", { class: "gauge", style: `--t:${pos(thr ?? hi)};--s:${pos(score ?? lo)};--c:${color}` },
-      thr != null && h("div", { class: "line" }, h("span", {}, `alert line ${fmt(thr)}`)), score != null && h("div", { class: "mark", title: `score ${fmt(score)}` })),
-    h("div", { class: "gauge-l" }, h("span", {}, "like normal traffic"), h("span", {}, "unlike normal traffic")));
+      score != null && h("i", { title: `score ${fmt(score)}` }), thr != null && h("div", { class: "line" }, h("span", {}, `alert line ${fmt(thr)}`))),
+    h("div", { class: "gauge-l" }, h("span", {}, "like normal traffic"), score != null && h("span", {}, "score ", h("b", {}, fmt(score))), h("span", {}, "unlike normal traffic")));
 }
 function sectionT(title, sub) { return h("div", { class: "sec-t" }, title, sub && h("small", {}, sub)); }
 
@@ -331,8 +345,9 @@ async function select(id) {
   const note = h("textarea", { placeholder: "Note for the audit log (optional). Notes never change the model.", maxlength: 500, "aria-label": "Review note" });
   const xbox = h("div", {}, h("div", { class: "skeleton" }), h("div", { class: "skeleton", style: "width:70%" }), h("div", { class: "skeleton", style: "width:85%" }));
 
+  pane.style.setProperty("--vc", col);
   put(pane,
-    h("div", { class: "d-head" }, h("span", { class: "vbig", style: `color:${col};border-color:${col}66;background:${col}18` }, dot(col), vname(e.verdict)),
+    h("div", { class: "d-head" }, h("span", { class: "vbig", style: `color:${col}` }, vname(e.verdict)),
       h("span", { class: "muted" }, `Flow ${e.id}`), e.status && h("span", { class: `status ${e.status}` }, STATUS[e.status])),
     h("div", { class: "d-sub" }, V[e.verdict][1], " · ", origin(e), e.src ? ` · ${mask(e.src)}` : "", e.incident ? " · part of an incident" : ""),
     h("div", { class: "sec-t", style: "margin-top:14px" }, "Flow features"),
@@ -359,7 +374,7 @@ async function select(id) {
         scores.length ? scores.map(([c, p]) => {
           const ok = p >= d.pass_marks[c];
           return h("div", { class: "crow" }, h("span", {}, c),
-            h("div", { class: "cbar", title: `score ${pct(p)} · bar ${pct(d.pass_marks[c])}` }, h("i", { class: ok ? "fit" : "", style: `width:${100 * p}%` }), h("b", { style: `left:${100 * d.pass_marks[c]}%` })),
+            h("div", { class: "cbar", title: `score ${pct(p)} · bar ${pct(d.pass_marks[c])}` }, h("i", { class: ok ? "fit" : "", style: `width:${100 * p}%${ok ? `;background:${c === "BENIGN" ? V.NORMAL[2] : V.KNOWN_ATTACK[2]}` : ""}` }), h("b", { style: `left:${100 * d.pass_marks[c]}%` })),
             h("span", { class: `fitlbl ${ok ? "yes" : "no"}` }, `${pct(p, 0)} · ${ok ? "fits" : "doesn't fit"}`));
         }) : h("div", { class: "muted small" }, "The attack classifier did not run on this flow."),
         scores.length > 0 && h("div", { class: "muted small", style: "margin-top:6px" }, "Bar = the classifier's score. White tick = the confidence bar that class must reach, set from held-back labelled data.")),
@@ -419,7 +434,7 @@ function explanation(x, e) {
       return h("div", { class: "shaprow" },
         h("div", { class: "sd" }, cap(t.description), h("small", {}, `${t.feature} = ${t.value}`)),
         h("div", { title: `contribution ${t.contribution.toFixed(4)}` },
-          h("div", { class: "sbar" }, h("i", { style: `${towards ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:${towards ? "#338ced" : "#eb6263"}` })),
+          h("div", { class: "sbar" }, h("i", { style: `${towards ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:${towards ? BLUE : INK3}` })),
           h("div", { class: "muted small", style: "text-align:center;margin-top:4px" }, towards ? `Pushes towards ${s.explained_class}` : "Pushes away")));
     })), h("div", { class: "muted small", style: "margin-top:6px" }, "TreeSHAP of the attack classifier: how much each value moved its score. It shows what the model used, not what caused the traffic."));
   } else out.push(h("div", { class: "muted" }, `Not available: ${s.reason || "the classifier did not run"}.`));
@@ -453,10 +468,10 @@ async function inject(sc, extra = {}) {
 }
 // What to expect for each kind of attack, in plain words.
 const EXPECT = {
-  known: ["#f18a59", "Known to the model. Expect: Known attack."],
-  hidden: ["#e5484d", "Hidden from training. Expect: Possible zero-day."],
-  rare: ["#e5484d", "A family the model never trained on. Expect: Possible zero-day or Unclear."],
-  new: ["#f5b524", "A new type in a known family. It may be recognised, flagged as unusual, or missed."],
+  known: [V.KNOWN_ATTACK[2], "Known to the model. Expect: Known attack."],
+  hidden: [V.UNKNOWN_ANOMALY[2], "Hidden from training. Expect: Possible zero-day."],
+  rare: [V.UNKNOWN_ANOMALY[2], "A family the model never trained on. Expect: Possible zero-day or Unclear."],
+  new: [V.UNCERTAIN_REVIEW[2], "A new type in a known family. It may be recognised, flagged as unusual, or missed."],
 };
 async function loadAttackTypes() {
   try {
@@ -490,7 +505,7 @@ async function loadHow() {
   put($("#pipe"),
     h("div", { class: "pnode" }, h("div", { class: "pn" }, "Step 1"), h("b", {}, "Input check"),
       h("p", {}, `Each flow must have all ${m.n_features} expected values with the right types. Broken records stop here as "Bad record".`)),
-    h("div", { class: "pnode duo" }, h("div", { class: "pn" }, "Step 2 · two detectors"),
+    h("div", { class: "pnode duo gate" }, h("div", { class: "pn" }, "Step 2 · two detectors"),
       h("div", {}, h("b", {}, "Unusual-traffic detector"), h("p", {}, "An Isolation Forest trained only on normal traffic. It scores how unlike normal a flow is."),
         h("div", { class: "pv" }, `Alert line ${fmt(m.threshold)}: about ${pct(m.target_fpr, 0)} of normal flows cross it (set on ${int(m.n_anom_cal)} normal flows).`)),
       h("div", {}, h("b", {}, "Attack classifier"), h("p", {}, `A gradient-boosted tree classifier that knows ${m.classes.join(", ")}.`),
@@ -507,7 +522,7 @@ async function loadHow() {
   put($("#passnote"), `${m.holdout} attacks were removed from training and calibration, so they act as a zero-day this model has never seen.`,
     m.rare.length ? ` ${m.rare.join(", ")} had too few examples to learn reliably and is treated the same way.` : "");
   const imp = m.importance.slice(0, 8), top = imp[0]?.importance || 1;
-  put($("#imp"), imp.map((f) => barRow(cap(f.description), f.feature, f.importance / top, "#338ced", pct(f.importance, 1), null, false)),
+  put($("#imp"), imp.map((f) => barRow(cap(f.description), f.feature, f.importance / top, BLUE, pct(f.importance, 1), null, false)),
     h("p", { class: "muted small" }, "Longer bar = the classifier uses this feature more often to separate attack types."));
   const G = [["Zero-day", "An attack type the model has never seen. Here: a type removed from training on purpose."],
     ["Unusualness score", "How unlike normal traffic a flow is. Higher means less normal."],
@@ -538,8 +553,12 @@ async function loadEval() {
     ["Zero-day alerts that were real", (r) => pct(r.unknown_precision)], ["Normal flows alerted", (r) => pct(r.auto_alert_fpr)],
     ["Normal flows sent to review", (r) => pct(r.review_rate)], ["Known-class accuracy (macro F1)", (r) => fmt(r.macro_f1)], ["Flows per second", (r) => int(Math.round(r.flows_per_s))]];
   put($("#exp thead"), h("tr", {}, cols.map((c) => h("th", {}, c[0]))));
+  // Best value per metric column (lower is better for the "Normal flows ..." burden columns).
+  const val = (c, r) => parseFloat(String(c[1](r)).replace(/,/g, ""));
+  const best = cols.map((c, i) => { if (i < 2) return null; const vs = m.experiments.map((r) => val(c, r)).filter(Number.isFinite);
+    return vs.length ? (c[0].startsWith("Normal flows") ? Math.min(...vs) : Math.max(...vs)) : null; });
   put($("#exp tbody"), m.experiments.map((r) => h("tr", { class: r.bundle === m.current.bundle ? "sel" : "", onclick: () => switchBundle(r.bundle), title: "Use this model in the console" },
-    cols.map((c, i) => h("td", { class: i > 1 ? "num" : "" }, c[1](r))))));
+    cols.map((c, i) => h("td", { class: i > 1 ? `num${val(c, r) === best[i] ? " best" : ""}` : "" }, c[1](r))))));
   const cur = m.current, lofo = cur.lofo, b = cur.benign;
   put($("#eval-kpis"),
     kpi("Hidden attack", lofo.holdout_family, `${int(lofo.n)} test flows, never seen in training`),
@@ -554,7 +573,7 @@ async function loadEval() {
     return barRow(c === "BENIGN" ? "Normal traffic" : c, `${int(pc[c]?.support)} test flows`, r, r >= 0.8 ? V.NORMAL[2] : r >= 0.5 ? V.UNCERTAIN_REVIEW[2] : V.UNKNOWN_ANOMALY[2], pct(r, 0), null, false); }) : "—",
     h("p", { class: "muted small" }, "Green 80% or more · amber 50-80% · red below 50%."));
   const vbl = cur.verdicts_by_label;
-  const OUT = [["Alerted", "#e5484d", ["UNKNOWN_ANOMALY", "KNOWN_ATTACK"]], ["Sent to review", "#f5b524", ["UNCERTAIN_REVIEW", "DEGRADED_REVIEW", "PROCESSING_ERROR"]], ["Called normal", "#2fbf4a", ["NORMAL"]]];
+  const OUT = [["Alerted", V.UNKNOWN_ANOMALY[2], ["UNKNOWN_ANOMALY", "KNOWN_ATTACK"]], ["Sent to review", V.UNCERTAIN_REVIEW[2], ["UNCERTAIN_REVIEW", "DEGRADED_REVIEW", "PROCESSING_ERROR"]], ["Called normal", V.NORMAL[2], ["NORMAL"]]];
   put($("#outcome"), h("div", { class: "legend" }, OUT.map(([n, col]) => h("span", {}, dot(col), n))),
     Object.keys(vbl).sort((a, b) => (a === "BENIGN") - (b === "BENIGN")).map((lab) => {
       const tot = Object.values(vbl[lab]).reduce((a, b) => a + b, 0) || 1;
