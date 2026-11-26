@@ -131,7 +131,7 @@ def main(argv=None):
     ap.add_argument("--experiment", help="<dataset>/<experiment_id> under artifacts/ (default: the model the console is using)")
     ap.add_argument("--console", default="http://127.0.0.1:8000", help="console address, used to find its model and verdicts")
     ap.add_argument("--count", type=int, help="number of flows (stream default: endless; other modes: 40)")
-    ap.add_argument("--rate", type=float, help="flows per second (stream default 2, other modes 5; 0 = instant)")
+    ap.add_argument("--rate", type=float, help="flows per second (stream default 15, other modes 5; 0 = instant)")
     ap.add_argument("--zero-day-share", type=float, default=0.15)
     ap.add_argument("--attack-share", type=float, help="share of other attacks (stream default 0.25, mix 0.15)")
     ap.add_argument("--seed", type=int)
@@ -141,7 +141,7 @@ def main(argv=None):
         live.INBOX.unlink(missing_ok=True)
         return print(f"cleared {live.INBOX}")
     stream = a.scenario == "stream"
-    a.rate = a.rate if a.rate is not None else (2 if stream else 5)
+    a.rate = a.rate if a.rate is not None else (15 if stream else 5)
     a.attack_share = a.attack_share if a.attack_share is not None else (0.25 if stream else 0.15)
     if a.zero_day_share + a.attack_share > 1:
         raise SystemExit("--zero-day-share + --attack-share must be at most 1")
