@@ -248,7 +248,8 @@ function renderFeed() {
     return h("li", { class: `item${fresh ? " fresh" : ""}`, tabindex: "0", role: "button", onclick: () => openEvent(e.id),
       onkeydown: (ev) => ev.key === "Enter" && openEvent(e.id), title: "See why it was flagged" },
       h("span", { class: "sc" }, srcTag(e), e.scenario || `Flow ${e.id}`), h("span", { class: "pr" }, `${urgency(e)} urgency`),
-      h("span", { class: "sub" }, [time(e.t), level(e.score), mask(e.src) && `from ${mask(e.src)}`, e.incident && "part of a burst from one host"].filter(Boolean).join(" · ")));
+      h("span", { class: "sub" }, [time(e.t), level(e.score), mask(e.src) && `from ${mask(e.src)}`, e.incident && "part of a burst from one host"].filter(Boolean).join(" · ")),
+      e.flow && h("span", { class: "sub mono" }, flowLine(e.flow)));
   }));
 }
 // ---------------- alerts ----------------
@@ -280,10 +281,28 @@ function renderTable() {
   put($("#tbl tbody"), S.rows.map((e) => h("tr", { class: e.id === S.sel ? "sel" : "", "data-id": e.id, onclick: () => select(e.id) },
     h("td", { class: "num" }, e.id), h("td", { class: "mono" }, time(e.t)), h("td", {}, pill(e.verdict)),
     h("td", {}, e.candidate ? h("b", {}, e.candidate) : e.set && e.set.length ? e.set.map((c) => h("span", { class: "setchip" }, c)) : h("span", { class: "muted" }, e.set ? "Nothing fits" : "—")),
+    h("td", { class: "small" }, flowLine(e.flow)),
     h("td", { class: "lvl" }, level(e.score), h("small", {}, fmt(e.score))),
     h("td", {}, h("span", { class: "pbar" }, h("i", { style: `width:${e.priority ?? 0}%` })), urgency(e)),
     h("td", { class: "src", title: origin(e) }, sentLabel(e)),
     h("td", {}, e.status ? h("span", { class: `status ${e.status}` }, STATUS[e.status]) : h("span", { class: "muted" }, "—")))));
+}
+
+const bytes = (b) => (b == null ? "—" : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(1)} KB` : `${Math.round(b)} B`);
+const secs = (s) => (s == null ? "—" : s >= 60 ? `${(s / 60).toFixed(1)} min` : s >= 1 ? `${s.toFixed(1)} s` : `${Math.round(s * 1000)} ms`);
+function flowLine(f) {
+  if (!f) return h("span", { class: "muted" }, "—");
+  return [f.protocol || (f.port != null ? `port ${f.port}` : null), secs(f.duration_s), f.packets != null ? `${num(f.packets)} pkts` : null, bytes(f.bytes)]
+    .filter(Boolean).join(" · ");
+}
+function flowFacts(f) {
+  if (!f) return h("div", { class: "muted small" }, "No flow features are available for this record.");
+  const rows = [["Protocol", f.protocol || "not recorded in this dataset"], ["Service", f.service], ["Destination port", f.port], ["Connection end", f.flag],
+    ["Duration", secs(f.duration_s)],
+    ["Packets", f.packets == null ? "not recorded in this dataset" : `${num(f.packets)} (${num(f.packets_out)} out / ${num(f.packets_back)} back)`],
+    ["Bytes", f.bytes == null ? "—" : `${bytes(f.bytes)} (${bytes(f.bytes_out)} out / ${bytes(f.bytes_back)} back)`]]
+    .filter(([, v]) => v != null && v !== "");
+  return h("div", { class: "kv" }, rows.flatMap(([k, v]) => [h("span", {}, k), h("span", { class: "mono" }, String(v))]));
 }
 
 function gauge(score, thr, color) {
@@ -316,6 +335,8 @@ async function select(id) {
     h("div", { class: "d-head" }, h("span", { class: "vbig", style: `color:${col};border-color:${col}66;background:${col}18` }, dot(col), vname(e.verdict)),
       h("span", { class: "muted" }, `Flow ${e.id}`), e.status && h("span", { class: `status ${e.status}` }, STATUS[e.status])),
     h("div", { class: "d-sub" }, V[e.verdict][1], " · ", origin(e), e.src ? ` · ${mask(e.src)}` : "", e.incident ? " · part of an incident" : ""),
+    h("div", { class: "sec-t", style: "margin-top:14px" }, "Flow features"),
+    flowFacts(e.flow),
     h("div", { class: "sec-t", style: "margin-top:14px" }, "In short"),
     decisionPath(e, fits, scores.length > 0, col),
     h("p", { class: "d-sum" }, d.summary),
@@ -472,7 +493,7 @@ async function loadHow() {
     h("div", { class: "pnode duo" }, h("div", { class: "pn" }, "Step 2 · two detectors"),
       h("div", {}, h("b", {}, "Unusual-traffic detector"), h("p", {}, "An Isolation Forest trained only on normal traffic. It scores how unlike normal a flow is."),
         h("div", { class: "pv" }, `Alert line ${fmt(m.threshold)}: about ${pct(m.target_fpr, 0)} of normal flows cross it (set on ${int(m.n_anom_cal)} normal flows).`)),
-      h("div", {}, h("b", {}, "Attack classifier"), h("p", {}, `A Random Forest that knows ${m.classes.join(", ")}.`),
+      h("div", {}, h("b", {}, "Attack classifier"), h("p", {}, `A gradient-boosted tree classifier that knows ${m.classes.join(", ")}.`),
         h("div", { class: "pv" }, "Each class has its own confidence bar. A class fits only if its score reaches the bar."))),
     h("div", { class: "pnode" }, h("div", { class: "pn" }, "Step 3"), h("b", {}, "Decision rules"), h("p", {}, "Seven fixed rules combine both answers. No model output can turn a failure into Normal.")),
     h("div", { class: "pnode" }, h("div", { class: "pn" }, "Step 4"), h("b", {}, "Verdict"),

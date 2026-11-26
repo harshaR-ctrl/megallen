@@ -45,6 +45,24 @@ def _num(v):
     return None if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v) else float(v)
 
 
+def flow_summary(x):
+    """Protocol, duration, packets and bytes of one flow, using whichever dataset's columns are present."""
+    g = lambda *cols: next((x[c] for c in cols if c in x and not pd.isna(x[c])), None)  # noqa: E731
+    n = lambda *cols: _num(pd.to_numeric(g(*cols), errors="coerce"))  # malformed records may carry strings  # noqa: E731
+    dur = n("duration")
+    if dur is None and (us := n("flow_duration")) is not None:
+        dur = us / 1e6  # CIC reports microseconds
+    pk_out, pk_back = n("total_fwd_packets"), n("total_backward_packets")
+    by_out, by_back = n("src_bytes", "total_length_of_fwd_packets"), n("dst_bytes", "total_length_of_bwd_packets")
+    proto, port = g("protocol_type", "protocol"), n("destination_port")
+    return {"protocol": None if proto is None else str(proto), "service": None if (sv := g("service")) is None else str(sv),
+            "port": None if port is None else int(port), "flag": None if (fl := g("flag")) is None else str(fl),
+            "duration_s": dur, "packets_out": pk_out, "packets_back": pk_back,
+            "packets": None if pk_out is None and pk_back is None else (pk_out or 0) + (pk_back or 0),
+            "bytes_out": by_out, "bytes_back": by_back,
+            "bytes": None if by_out is None and by_back is None else (by_out or 0) + (by_back or 0)}
+
+
 class Engine:
     def __init__(self):
         self.lock = threading.RLock()
@@ -103,7 +121,8 @@ class Engine:
                 "conflict": bool(row["novelty_conflict"]), "novelty": None if row["novelty_triggered"] is None else bool(row["novelty_triggered"]),
                 "score": _num(row["anomaly_score"]), "priority": _num(row["priority"]), "band": row["priority_band"],
                 "incident": row["incident_id"] if isinstance(row["incident_id"], str) else None,
-                "error": row["error"], "status": None if v == core.NORMAL else "new", "history": []}
+                "error": row["error"], "status": None if v == core.NORMAL else "new", "history": [],
+                "flow": flow_summary(X.loc[eid])}
             self.detail[eid] = (X.loc[[eid]], row, m)
             self.order.append(eid)
         while len(self.order) > MAX_EVENTS:
@@ -372,9 +391,8 @@ def explain(eid: int):
 @app.get("/api/model")
 def model_info():
     with engine.lock:
-        clf, schema, cal = engine.bundle["supervised_model"], engine.schema, engine.cal
-        names = schema["numeric"] + schema["categorical"]
-        imp = sorted(zip(names, clf.feature_importances_), key=lambda t: -t[1])[:15]
+        schema, cal = engine.schema, engine.cal
+        imp = sorted(schema["feature_importance"]["values"].items(), key=lambda t: -t[1])[:15]
         rare = engine.bundle["metrics"]["test"].get("rare_families_excluded_from_known_set") or {}
         return pipeline._json_clean({
             "bundle": engine.name, "dataset": schema["dataset"], "holdout": schema["holdout_family"], "classes": schema["classes"],
@@ -447,6 +465,14 @@ async def stream(since: int = 0):
 @app.get("/vendor/plotly.min.js")
 def plotly_js():
     return FileResponse(Path(plotly.__file__).parent / "package_data" / "plotly.min.js", media_type="text/javascript")
+
+
+@app.middleware("http")
+async def no_stale_ui(request, call_next):
+    resp = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        resp.headers["Cache-Control"] = "no-cache"  # browsers revalidate, so UI changes show after a refresh
+    return resp
 
 
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

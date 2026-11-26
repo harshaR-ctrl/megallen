@@ -1,6 +1,6 @@
 # Megallen: leakage-audited open-world intrusion detection
 
-Offline defensive research demonstrator: a class-weighted Random Forest (known attacks), a benign-only
+Offline defensive research demonstrator: a class-weighted histogram gradient-boosting classifier (known attacks), a benign-only
 Isolation Forest (novelty gate), class-conditional split conformal sets (uncertainty), and a deterministic
 decision table, with temporal grouping, a heuristic triage priority, TreeSHAP/baseline explanations, PSI drift
 and a real-time analyst console (FastAPI + plain JS + Plotly). Design specs: `architecture (1).md`, `pipeline (1).md`, `techstack (1).md`, `workflow (1).md`.
@@ -120,10 +120,10 @@ Below the steps:
 
 - **What made it unusual:** the features furthest from the benign training baseline (median and 95th percentile),
   written as sentences. This is a diagnostic comparison, not SHAP and not proof of cause.
-- **What the classifier relied on:** TreeSHAP values of the Random Forest for its candidate or top class,
+- **What the classifier relied on:** TreeSHAP values of the gradient-boosting classifier for its candidate or top class,
   pushing towards or away from it. SHAP explains the classifier only; the Isolation Forest is explained by the
   baseline deviation above.
-- **Global view:** the "How it decides" page shows the Random Forest's top 15 feature importances.
+- **Global view:** the "How it decides" page shows the classifier's top 15 features by mean |SHAP|.
 
 `ids/glossary.py` gives every NSL-KDD feature (and common CIC-IDS2017 ones) a plain description; other names fall
 back to readable words. The API behind this: `/api/events/{id}` (summary, rule, scores, confidence bars),

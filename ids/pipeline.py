@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import sklearn
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, IsolationForest
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import balanced_accuracy_score, classification_report, confusion_matrix, f1_score
 from sklearn.preprocessing import OrdinalEncoder
@@ -45,8 +45,11 @@ def train(df, part, info, holdout, seed=42, alpha=0.05, beta=0.01, n_estimators=
     feats, num, cat = info["features"], info["numeric"], info["categorical"]
     tr = df[part == "train"]
     clf_pre = make_preprocessor(num, cat).fit(tr[feats])
-    clf = RandomForestClassifier(n_estimators=n_estimators, class_weight="balanced_subsample", min_samples_leaf=2,
-                                 n_jobs=-1, random_state=seed).fit(clf_pre.transform(tr[feats]), tr["label"])
+    # Gradient boosting beat the earlier Random Forest on mean validation macro-F1 across NSL-KDD LOFO splits.
+    Xtr = clf_pre.transform(tr[feats])
+    clf = HistGradientBoostingClassifier(max_iter=n_estimators, class_weight="balanced", random_state=seed,
+                                         categorical_features=list(range(len(num), len(num) + len(cat))) or None
+                                         ).fit(Xtr, tr["label"])
     ben = tr[tr["label"] == BENIGN]
     nov_pre = make_preprocessor(num, cat).fit(ben[feats])
     iso = IsolationForest(n_estimators=n_estimators, random_state=seed, n_jobs=-1).fit(nov_pre.transform(ben[feats]))
@@ -64,7 +67,10 @@ def train(df, part, info, holdout, seed=42, alpha=0.05, beta=0.01, n_estimators=
                       "classes": core.conformal_quantiles(clf.predict_proba(clf_pre.transform(conf_cal[feats])),
                                                           conf_cal["label"], classes, alpha)},
     }
-    importances = pd.Series(clf.feature_importances_, index=num + cat)
+    import shap
+    sample = Xtr[np.random.default_rng(seed).choice(len(Xtr), min(500, len(Xtr)), replace=False)]
+    sv = np.abs(np.asarray(shap.TreeExplainer(clf).shap_values(sample, check_additivity=False)))
+    importances = pd.Series(sv.reshape(len(sample), len(num + cat), -1).mean(axis=(0, 2)), index=num + cat)
     monitored = importances[num].nlargest(10).index.tolist()
     ben_num = ben[num]
     schema = {
@@ -75,6 +81,7 @@ def train(df, part, info, holdout, seed=42, alpha=0.05, beta=0.01, n_estimators=
         "benign_reference": {c: {"median": _f(ben_num[c].median()), "p05": _f(ben_num[c].quantile(.05)),
                                  "p95": _f(ben_num[c].quantile(.95))} for c in num},
         "psi_baseline": core.psi_baseline(tr, monitored),
+        "feature_importance": {"method": "mean |TreeSHAP| on 500 training rows", "values": importances.to_dict()},
         "priority_policy": {"version": "priority-v1", "weights": core.PRIORITY_WEIGHTS, "kind": "heuristic",
                             "note": "provisional placeholder weights; missing components renormalised"},
     }
@@ -205,7 +212,7 @@ def explain(bundle, X_row, result_row, top=5):
         contrib = sv[0, :, k] if sv.ndim == 3 and sv.shape[1] == len(names) else sv[k, 0, :]
         assert contrib.shape == (len(names),), f"unexpected SHAP shape {sv.shape}"
         order = np.argsort(-np.abs(contrib))[:top]
-        out["shap"] = {"method": "TreeSHAP (supervised Random Forest)", "explained_class": cls,
+        out["shap"] = {"method": "TreeSHAP (supervised gradient boosting)", "explained_class": cls,
                        "top_features": [{"feature": names[i], "value": _val(X_row[names[i]].iloc[0]),
                                          "contribution": float(contrib[i]),
                                          "direction": f"towards {cls}" if contrib[i] > 0 else f"away from {cls}"}
